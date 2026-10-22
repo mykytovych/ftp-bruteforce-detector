@@ -8,50 +8,48 @@ from collections import defaultdict
 
 def analyze_pcap(file_path, threshold=5, output_file=None):
     """
-    Analyzes a PCAP/PCAPNG file for FTP brute-force attacks, 
-    extracts targeted usernames, and detects successful breaches.
+    Analyzes a PCAP/PCAPNG file by inspecting raw TCP payloads,
+    bypassing strict Wireshark protocol dissectors for better resilience.
     """
     if not os.path.exists(file_path):
         print(f"[-] Error: File '{file_path}' not found.")
         sys.exit(1)
         
-    print(f"[*] Analyzing {file_path} for FTP brute-force attacks...")
+    print(f"[*] Analyzing {file_path} for raw FTP payloads...")
     
-    # Data structure to track attacker activity
-    # Format: { 'ip': {'failed_attempts': 0, 'usernames': set(), 'breached': False} }
     attack_data = defaultdict(lambda: {'failed_attempts': 0, 'usernames': set(), 'breached': False})
     
-    # Fix for "There is no current event loop in thread" error in pyshark
     try:
         asyncio.get_event_loop()
     except RuntimeError:
         asyncio.set_event_loop(asyncio.new_event_loop())
     
     try:
-        capture = pyshark.FileCapture(file_path, display_filter='ftp')
+        capture = pyshark.FileCapture(file_path)
         
         for packet in capture:
-            if not hasattr(packet, 'ftp'):
-                continue
-            
-            # Track targeted usernames (Client -> Server)
-            if hasattr(packet.ftp, 'request_command') and packet.ftp.request_command == 'USER':
-                attacker_ip = packet.ip.src
-                username = packet.ftp.request_arg
-                attack_data[attacker_ip]['usernames'].add(username)
-                
-            # Track authentication responses (Server -> Client)
-            if hasattr(packet.ftp, 'response_code'):
-                attacker_ip = packet.ip.dst # Server responds TO the attacker
-                
-                # 530: Not logged in (Failed)
-                if packet.ftp.response_code == '530':
-                    attack_data[attacker_ip]['failed_attempts'] += 1
-                
-                # 230: User logged in (Success)
-                elif packet.ftp.response_code == '230':
-                    if attack_data[attacker_ip]['failed_attempts'] > 0:
-                        attack_data[attacker_ip]['breached'] = True
+            if hasattr(packet, 'tcp') and hasattr(packet, 'ip'):
+                if packet.tcp.srcport == '21' or packet.tcp.dstport == '21':
+                    if hasattr(packet.tcp, 'payload'):
+                        try:
+                            raw_payload = bytes.fromhex(packet.tcp.payload.replace(':', ''))
+                            payload_str = raw_payload.decode('utf-8', errors='ignore').strip()
+                            
+                            if payload_str.startswith('USER '):
+                                attacker_ip = packet.ip.src
+                                username = payload_str.split(' ', 1)[1]
+                                attack_data[attacker_ip]['usernames'].add(username)
+                                
+                            elif payload_str.startswith('530'):
+                                attacker_ip = packet.ip.dst
+                                attack_data[attacker_ip]['failed_attempts'] += 1
+                                
+                            elif payload_str.startswith('230'):
+                                attacker_ip = packet.ip.dst
+                                if attack_data[attacker_ip]['failed_attempts'] > 0:
+                                    attack_data[attacker_ip]['breached'] = True
+                        except Exception:
+                            continue
 
         capture.close()
         generate_report(attack_data, threshold, output_file)
@@ -60,7 +58,6 @@ def analyze_pcap(file_path, threshold=5, output_file=None):
         print(f"[-] Error during analysis: {e}")
 
 def generate_report(attack_data, threshold, output_file):
-    """Generates console output and optional JSON report."""
     print("\n" + "="*30 + " ANALYSIS REPORT " + "="*30)
     
     report_results = []
