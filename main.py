@@ -2,6 +2,7 @@ import argparse
 import sys
 import os
 import json
+import asyncio
 import pyshark
 from collections import defaultdict
 
@@ -19,6 +20,12 @@ def analyze_pcap(file_path, threshold=5, output_file=None):
     # Data structure to track attacker activity
     # Format: { 'ip': {'failed_attempts': 0, 'usernames': set(), 'breached': False} }
     attack_data = defaultdict(lambda: {'failed_attempts': 0, 'usernames': set(), 'breached': False})
+    
+    # Fix for "There is no current event loop in thread" error in pyshark
+    try:
+        asyncio.get_event_loop()
+    except RuntimeError:
+        asyncio.set_event_loop(asyncio.new_event_loop())
     
     try:
         capture = pyshark.FileCapture(file_path, display_filter='ftp')
